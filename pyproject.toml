@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "github-app"
+version = "0.1.0"
+description = "GitHub App auth for coding-agent projects"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "cryptography>=42.0.0",
+]
+
+[project.scripts]
+github-app = "github_app.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/github_app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
