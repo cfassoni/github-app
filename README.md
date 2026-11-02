@@ -13,8 +13,24 @@ Harness-independent CLI for authenticating Git and GitHub CLI (`gh`) operations 
 
 Install globally using `uv`:
 
+### Directly from GitHub
+
+```bash
+uv tool install git+https://github.com/cfassoni/github-app.git
+```
+
+### From Local Source
+
 ```bash
 uv tool install .
+```
+
+### Upgrading
+
+To upgrade to the latest version:
+
+```bash
+uv tool upgrade github-app
 ```
 
 ## Usage
@@ -76,4 +92,3 @@ github-app run gh issue view 42
 ```bash
 github-app status
 ```
-
