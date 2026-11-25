@@ -32,6 +32,7 @@ Commands:
   github-app credential-helper get|store|erase
   github-app run [--profile NAME] COMMAND [ARGS...]
   github-app status [--profile NAME]
+  github-app mcp
 
 Profiles contain App/installation IDs, a private-key file path, and the local Git
 commit identity. The key itself stays in its existing file. Tokens are cached
@@ -303,34 +304,40 @@ def configure_git_repo(repo_dir: Path, profile_name: str, profile: dict[str, Any
     subprocess.run(
         ["git", "config", "--local", "github-app.profile", profile_name],
         cwd=str(repo_dir),
+        capture_output=True,
         check=True,
     )
     if profile.get("git_name"):
         subprocess.run(
             ["git", "config", "--local", "user.name", profile["git_name"]],
             cwd=str(repo_dir),
+            capture_output=True,
             check=True,
         )
     if profile.get("git_email"):
         subprocess.run(
             ["git", "config", "--local", "user.email", profile["git_email"]],
             cwd=str(repo_dir),
+            capture_output=True,
             check=True,
         )
 
     subprocess.run(
         ["git", "config", "--local", "--unset-all", "credential.helper"],
         cwd=str(repo_dir),
+        capture_output=True,
         check=False,
     )
     subprocess.run(
         ["git", "config", "--local", "--add", "credential.helper", ""],
         cwd=str(repo_dir),
+        capture_output=True,
         check=True,
     )
     subprocess.run(
         ["git", "config", "--local", "--add", "credential.helper", helper_cmd],
         cwd=str(repo_dir),
+        capture_output=True,
         check=True,
     )
 
@@ -512,6 +519,62 @@ def cmd_profiles(args: list[str]) -> int:
     return 0
 
 
+def init_repository(
+    profile_name: str,
+    *,
+    cwd: Path | None = None,
+    repository: str | None = None,
+    create: bool = False,
+) -> Path:
+    profile = get_profile(profile_name)
+    target_dir = (cwd or Path.cwd()).resolve()
+    if not target_dir.is_dir():
+        raise CLIError(f"github-app: directory not found: {target_dir}")
+
+    git_dir = target_dir / ".git"
+    if not git_dir.exists():
+        subprocess.run(
+            ["git", "init"],
+            cwd=str(target_dir),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    configure_git_repo(target_dir, profile_name, profile)
+
+    if repository:
+        remote_url = normalize_repository_url(repository)
+        if create:
+            token_data = get_token_data(profile_name)
+            remote_url = create_github_repository(token_data["token"], repository)
+        existing_remote = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(target_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if existing_remote.returncode == 0:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", remote_url],
+                cwd=str(target_dir),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        else:
+            subprocess.run(
+                ["git", "remote", "add", "origin", remote_url],
+                cwd=str(target_dir),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+    return target_dir
+
+
 def cmd_init(args: list[str]) -> int:
     profile_name: str | None = None
     create_flag = False
@@ -535,7 +598,6 @@ def cmd_init(args: list[str]) -> int:
     if not profile_name:
         raise CLIError("github-app: 'init' requires --profile NAME")
 
-    profile = get_profile(profile_name)
     repo_arg = positional[0] if positional else None
     target_dir = Path.cwd()
 
@@ -543,38 +605,60 @@ def cmd_init(args: list[str]) -> int:
         target_dir = Path(repo_arg).resolve()
         repo_arg = None
 
-    git_dir = target_dir / ".git"
-    if not git_dir.exists():
-        subprocess.run(["git", "init"], cwd=str(target_dir), check=True)
-
-    configure_git_repo(target_dir, profile_name, profile)
-
-    if repo_arg:
-        remote_url = normalize_repository_url(repo_arg)
-        if create_flag:
-            token_data = get_token_data(profile_name)
-            remote_url = create_github_repository(token_data["token"], repo_arg)
-        existing_remote = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=str(target_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if existing_remote.returncode == 0:
-            subprocess.run(
-                ["git", "remote", "set-url", "origin", remote_url],
-                cwd=str(target_dir),
-                check=True,
-            )
-        else:
-            subprocess.run(
-                ["git", "remote", "add", "origin", remote_url],
-                cwd=str(target_dir),
-                check=True,
-            )
-
+    init_repository(profile_name, cwd=target_dir, repository=repo_arg, create=create_flag)
     return 0
+
+
+def clone_repository(
+    profile_name: str,
+    repository: str,
+    *,
+    directory: str | None = None,
+    cwd: Path | None = None,
+    capture_output: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    profile = get_profile(profile_name)
+    remote_url = normalize_repository_url(repository)
+    base_dir = (cwd or Path.cwd()).resolve()
+
+    if directory:
+        dest_candidate = Path(directory)
+        dest_dir = (
+            dest_candidate.resolve()
+            if dest_candidate.is_absolute()
+            else (base_dir / dest_candidate).resolve()
+        )
+    else:
+        normalized_path = remote_url.replace("\\", "/").rstrip("/")
+        repo_leaf = normalized_path.split("/")[-1].removesuffix(".git")
+        dest_dir = (base_dir / repo_leaf).resolve()
+
+    helper_cmd = f"{resolve_executable_for_git()} credential-helper"
+    env = os.environ.copy()
+    env["GITHUB_APP_PROFILE"] = profile_name
+
+    clone_cmd = [
+        "git",
+        "-c",
+        "credential.helper=",
+        "-c",
+        f"credential.helper={helper_cmd}",
+        "clone",
+        remote_url,
+        str(dest_dir),
+    ]
+    proc = subprocess.run(
+        clone_cmd,
+        env=env,
+        capture_output=capture_output,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode == 0:
+        configure_git_repo(dest_dir, profile_name, profile)
+    return proc, dest_dir
 
 
 def cmd_clone(args: list[str]) -> int:
@@ -596,37 +680,9 @@ def cmd_clone(args: list[str]) -> int:
     if not profile_name or not positional:
         raise CLIError("github-app: usage: github-app clone --profile NAME REPOSITORY [DIRECTORY]")
 
-    profile = get_profile(profile_name)
-    repo_spec = positional[0]
-    remote_url = normalize_repository_url(repo_spec)
-
-    if len(positional) >= 2:
-        dest_dir = Path(positional[1]).resolve()
-    else:
-        normalized_path = remote_url.replace("\\", "/").rstrip("/")
-        repo_leaf = normalized_path.split("/")[-1].removesuffix(".git")
-        dest_dir = (Path.cwd() / repo_leaf).resolve()
-
-    helper_cmd = f"{resolve_executable_for_git()} credential-helper"
-    env = os.environ.copy()
-    env["GITHUB_APP_PROFILE"] = profile_name
-
-    clone_cmd = [
-        "git",
-        "-c",
-        "credential.helper=",
-        "-c",
-        f"credential.helper={helper_cmd}",
-        "clone",
-        remote_url,
-        str(dest_dir),
-    ]
-    proc = subprocess.run(clone_cmd, env=env, check=False)
-    if proc.returncode != 0:
-        return proc.returncode
-
-    configure_git_repo(dest_dir, profile_name, profile)
-    return 0
+    directory = positional[1] if len(positional) >= 2 else None
+    proc, _ = clone_repository(profile_name, positional[0], directory=directory)
+    return proc.returncode
 
 
 def cmd_credential_helper(args: list[str]) -> int:
@@ -695,6 +751,34 @@ def cmd_run(args: list[str]) -> int:
     return proc.returncode
 
 
+def get_status_info(
+    profile_name: str | None = None,
+    *,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    resolved_profile = resolve_profile_name(profile_name, cwd=cwd)
+    profile = get_profile(resolved_profile)
+    try:
+        effective_policy = load_effective_policy(profile).to_dict()
+    except (TypeError, ValueError) as exc:
+        raise CLIError(
+            f"github-app: invalid policy for profile '{resolved_profile}' ({exc})"
+        ) from exc
+    token_data = get_token_data(resolved_profile)
+
+    git_name = profile.get("git_name", "")
+    git_email = profile.get("git_email", "")
+    git_identity = f"{git_name} <{git_email}>".strip() if (git_name or git_email) else "unconfigured"
+
+    return {
+        "profile": resolved_profile,
+        "expires_at": token_data.get("expires_at", "unknown"),
+        "permissions": token_data.get("permissions", {}),
+        "git_identity": git_identity,
+        "policy": effective_policy,
+    }
+
+
 def cmd_status(args: list[str]) -> int:
     profile_name: str | None = None
     idx = 0
@@ -706,20 +790,22 @@ def cmd_status(args: list[str]) -> int:
         else:
             raise CLIError(f"github-app: unknown option '{arg}' for 'status'")
 
-    resolved_profile = resolve_profile_name(profile_name)
-    profile = get_profile(resolved_profile)
-    token_data = get_token_data(resolved_profile)
+    info = get_status_info(profile_name)
+    perms_json = json.dumps(info["permissions"], separators=(",", ":"), sort_keys=True)
 
-    perms_json = json.dumps(token_data.get("permissions", {}), separators=(",", ":"), sort_keys=True)
-    git_name = profile.get("git_name", "")
-    git_email = profile.get("git_email", "")
-    git_identity = f"{git_name} <{git_email}>".strip() if (git_name or git_email) else "unconfigured"
-
-    print(f"Profile: {resolved_profile}")
-    print(f"Expires: {token_data.get('expires_at', 'unknown')}")
+    print(f"Profile: {info['profile']}")
+    print(f"Expires: {info['expires_at']}")
     print(f"Permissions: {perms_json}")
-    print(f"Git identity: {git_identity}")
+    print(f"Git identity: {info['git_identity']}")
     return 0
+
+
+def cmd_mcp(args: list[str]) -> int:
+    if args:
+        raise CLIError("github-app: 'mcp' takes no arguments")
+    from github_app.mcp_server import serve_stdio
+
+    return serve_stdio()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -747,6 +833,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_run(rest)
         if cmd == "status":
             return cmd_status(rest)
+        if cmd == "mcp":
+            return cmd_mcp(rest)
         raise CLIError(f"github-app: unknown command '{cmd}' (run github-app --help)")
     except CLIError as exc:
         print(str(exc), file=sys.stderr)

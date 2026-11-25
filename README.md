@@ -9,6 +9,7 @@ Harness-independent CLI for authenticating Git and GitHub CLI (`gh`) operations 
 - **Git Credential Helper**: Configures repository-local `credential.helper` so standard `git fetch`, `git pull`, and `git push` authenticate seamlessly over HTTPS.
 - **GitHub CLI (`gh`) Wrapper**: `github-app run gh ...` injects `GH_TOKEN` and `GITHUB_TOKEN` into the child process environment without exposing secrets in shell history or prompts.
 - **Profile-Scoped Security Policy & Secret Redaction**: Restrictive default guardrails (blocking force-pushes, remote branch deletions, direct pushes to `main`/`master`, `gh auth *`, `gh repo delete`, `gh pr merge`, `gh secret`/`gh variable` mutations, and direct `gh api` equivalents) with human-only CLI overrides and mandatory redaction of GitHub tokens, JWTs, and PEM blocks.
+- **Built-in Stdio MCP Server**: `github-app mcp` exposes 8 policy-enforced tools (`github_app_profiles`, `github_app_status`, `github_app_init`, `git_clone`, `git_fetch`, `git_pull`, `git_push`, `gh_run`) over JSON-RPC 2.0 `stdio` for sandboxed coding agents.
 
 ## Installation
 
@@ -48,6 +49,7 @@ Commands:
   github-app credential-helper get|store|erase
   github-app run [--profile NAME] COMMAND [ARGS...]
   github-app status [--profile NAME]
+  github-app mcp
 ```
 
 ### 1. Import a Profile from `.env`
@@ -132,3 +134,11 @@ github-app profile policy reset --name my-project
 ```
 
 Re-running `github-app profile import` for an existing profile preserves its stored `policy` overrides. See [docs/security-policy.md](docs/security-policy.md) for the complete rule reference and secret redaction specification.
+
+### 7. Run the Built-in Stdio MCP Server
+
+```bash
+github-app mcp
+```
+
+See [docs/mcp-server.md](docs/mcp-server.md) for the JSON-RPC 2.0 `stdio` configuration snippet, all 8 MCP tools, and security guarantees.
