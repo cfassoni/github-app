@@ -19,10 +19,13 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+from github_app.policy import load_effective_policy
+
 HELP_TEXT = """GitHub App auth for coding-agent projects
 
 Commands:
   github-app profile import --name NAME --env FILE --git-name NAME --git-email EMAIL
+  github-app profile policy show|set|reset --name NAME [OPTIONS]
   github-app profiles
   github-app init --profile NAME [--create] [REPOSITORY]
   github-app clone --profile NAME REPOSITORY [DIRECTORY]
@@ -65,7 +68,7 @@ def _secure_write_json(path: Path, data: dict[str, Any]) -> None:
         path.chmod(0o600)
 
 
-def load_profiles() -> dict[str, dict[str, str]]:
+def load_profiles() -> dict[str, dict[str, Any]]:
     profiles_file = get_profiles_file()
     if not profiles_file.exists():
         return {}
@@ -78,7 +81,7 @@ def load_profiles() -> dict[str, dict[str, str]]:
     return {}
 
 
-def save_profiles(profiles: dict[str, dict[str, str]]) -> None:
+def save_profiles(profiles: dict[str, dict[str, Any]]) -> None:
     _secure_write_json(get_profiles_file(), profiles)
 
 
@@ -127,7 +130,7 @@ def resolve_profile_name(explicit_profile: str | None = None, cwd: Path | None =
     )
 
 
-def get_profile(profile_name: str) -> dict[str, str]:
+def get_profile(profile_name: str) -> dict[str, Any]:
     profiles = load_profiles()
     if profile_name not in profiles:
         raise CLIError(f"github-app: profile '{profile_name}' not found")
@@ -294,7 +297,7 @@ def create_github_repository(token: str, repo_spec: str) -> str:
         raise CLIError(f"github-app: failed to create repository ({exc.code}): {detail}") from exc
 
 
-def configure_git_repo(repo_dir: Path, profile_name: str, profile: dict[str, str]) -> None:
+def configure_git_repo(repo_dir: Path, profile_name: str, profile: dict[str, Any]) -> None:
     helper_cmd = f"{resolve_executable_for_git()} credential-helper"
 
     subprocess.run(
@@ -332,16 +335,28 @@ def configure_git_repo(repo_dir: Path, profile_name: str, profile: dict[str, str
     )
 
 
-def cmd_profile(args: list[str]) -> int:
-    if not args or args[0] != "import":
-        raise CLIError("github-app: expected 'github-app profile import ...' (run github-app --help)")
+def _parse_cli_bool(flag: str, raw: str) -> bool:
+    normalized = raw.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise CLIError(f"github-app: '{flag}' expects 'true' or 'false', got '{raw}'")
 
+
+def _parse_cli_branches(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _cmd_profile_import(args: list[str]) -> int:
     name: str | None = None
     env_file: str | None = None
     git_name: str | None = None
     git_email: str | None = None
 
-    idx = 1
+    idx = 0
     while idx < len(args):
         arg = args[idx]
         if arg == "--name" and idx + 1 < len(args):
@@ -381,15 +396,111 @@ def cmd_profile(args: list[str]) -> int:
     resolved_git_email = git_email or env_vars.get("GITHUB_GIT_EMAIL") or ""
 
     profiles = load_profiles()
-    profiles[name] = {
+    existing_policy = profiles.get(name, {}).get("policy")
+    entry: dict[str, Any] = {
         "app_id": str(app_id),
         "installation_id": str(installation_id),
         "private_key_path": pk_val,
         "git_name": resolved_git_name,
         "git_email": resolved_git_email,
     }
+    if existing_policy is not None:
+        entry["policy"] = existing_policy
+    profiles[name] = entry
     save_profiles(profiles)
     return 0
+
+
+def _cmd_profile_policy(args: list[str]) -> int:
+    if not args or args[0] not in ("show", "set", "reset"):
+        raise CLIError(
+            "github-app: usage: github-app profile policy show|set|reset --name NAME [OPTIONS]"
+        )
+
+    action = args[0]
+    name: str | None = None
+    updates: dict[str, Any] = {}
+
+    idx = 1
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--name" and idx + 1 < len(args):
+            name = args[idx + 1]
+            idx += 2
+        elif action == "set" and arg == "--protected-branches" and idx + 1 < len(args):
+            updates["protected_branches"] = _parse_cli_branches(args[idx + 1])
+            idx += 2
+        elif action == "set" and arg == "--allow-merge-branches" and idx + 1 < len(args):
+            updates["allow_merge_branches"] = _parse_cli_branches(args[idx + 1])
+            idx += 2
+        elif action == "set" and arg == "--allow-force-push" and idx + 1 < len(args):
+            updates["allow_force_push"] = _parse_cli_bool(arg, args[idx + 1])
+            idx += 2
+        elif action == "set" and arg == "--allow-delete-remote-branch" and idx + 1 < len(args):
+            updates["allow_delete_remote_branch"] = _parse_cli_bool(arg, args[idx + 1])
+            idx += 2
+        else:
+            raise CLIError(
+                f"github-app: unknown or incomplete option '{arg}' for 'profile policy {action}'"
+            )
+
+    if not name:
+        raise CLIError(f"github-app: 'profile policy {action}' requires --name NAME")
+
+    profiles = load_profiles()
+    if name not in profiles:
+        raise CLIError(f"github-app: profile '{name}' not found")
+    profile = profiles[name]
+
+    if action == "show":
+        try:
+            effective = load_effective_policy(profile)
+        except (TypeError, ValueError) as exc:
+            raise CLIError(f"github-app: invalid policy for profile '{name}' ({exc})") from exc
+        payload = {
+            "profile": name,
+            "effective": effective.to_dict(),
+            "overrides": profile.get("policy", {}),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if action == "set":
+        if not updates:
+            raise CLIError(
+                "github-app: 'profile policy set' requires at least one policy option"
+            )
+        existing_raw = profile.get("policy")
+        merged = dict(existing_raw) if isinstance(existing_raw, dict) else {}
+        merged.update(updates)
+        profile["policy"] = merged
+        try:
+            effective = load_effective_policy(profile)
+        except (TypeError, ValueError) as exc:
+            raise CLIError(f"github-app: invalid policy ({exc})") from exc
+        save_profiles(profiles)
+        print(json.dumps({"profile": name, "effective": effective.to_dict()}, indent=2, sort_keys=True))
+        return 0
+
+    profile.pop("policy", None)
+    save_profiles(profiles)
+    effective = load_effective_policy(profile)
+    print(json.dumps({"profile": name, "effective": effective.to_dict()}, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_profile(args: list[str]) -> int:
+    if not args:
+        raise CLIError(
+            "github-app: expected 'github-app profile import|policy ...' (run github-app --help)"
+        )
+    if args[0] == "import":
+        return _cmd_profile_import(args[1:])
+    if args[0] == "policy":
+        return _cmd_profile_policy(args[1:])
+    raise CLIError(
+        "github-app: expected 'github-app profile import|policy ...' (run github-app --help)"
+    )
 
 
 def cmd_profiles(args: list[str]) -> int:

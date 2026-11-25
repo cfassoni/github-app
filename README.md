@@ -8,6 +8,7 @@ Harness-independent CLI for authenticating Git and GitHub CLI (`gh`) operations 
 - **Private Key Isolation**: Profile configurations record only the path to the existing `.pem` private key file—never copying private key material into configuration or cache files.
 - **Git Credential Helper**: Configures repository-local `credential.helper` so standard `git fetch`, `git pull`, and `git push` authenticate seamlessly over HTTPS.
 - **GitHub CLI (`gh`) Wrapper**: `github-app run gh ...` injects `GH_TOKEN` and `GITHUB_TOKEN` into the child process environment without exposing secrets in shell history or prompts.
+- **Profile-Scoped Security Policy & Secret Redaction**: Restrictive default guardrails (blocking force-pushes, remote branch deletions, direct pushes to `main`/`master`, `gh auth *`, `gh repo delete`, `gh pr merge`, `gh secret`/`gh variable` mutations, and direct `gh api` equivalents) with human-only CLI overrides and mandatory redaction of GitHub tokens, JWTs, and PEM blocks.
 
 ## Installation
 
@@ -40,6 +41,7 @@ GitHub App auth for coding-agent projects
 
 Commands:
   github-app profile import --name NAME --env FILE --git-name NAME --git-email EMAIL
+  github-app profile policy show|set|reset --name NAME [OPTIONS]
   github-app profiles
   github-app init --profile NAME [--create] [REPOSITORY]
   github-app clone --profile NAME REPOSITORY [DIRECTORY]
@@ -92,3 +94,41 @@ github-app run gh issue view 42
 ```bash
 github-app status
 ```
+
+### 6. Manage Profile Security Policy
+
+Each profile in `~/.config/github-app/profiles.json` inherits restrictive defaults that are managed exclusively via the CLI (never mutated by agents):
+
+| Policy Key | Default | Description |
+| :--- | :--- | :--- |
+| `protected_branches` | `["main", "master"]` | Branches blocked from direct pushes and protected-ref API mutations. |
+| `allow_merge_branches` | `[]` | Target PR base branches permitted for `gh pr merge` (empty denies all merges). |
+| `allow_force_push` | `false` | Permits `--force`, `--force-with-lease`, or `+refspec` pushes when `true`. |
+| `allow_delete_remote_branch` | `false` | Permits `--delete` or `:branch` remote deletions when `true` (protected branches remain blocked). |
+
+Always denied by policy: `gh auth *`, `gh repo delete`, `gh secret`/`gh variable` mutations (only `list` is permitted), and direct `gh api` equivalents (`PUT repos/*/*/pulls/*/merge`, `DELETE repos/*/*`, mutating calls on secrets/variables endpoints, `PATCH`/`DELETE` on protected `git/refs/heads/*`, and GraphQL `mergePullRequest`/`deleteRepository`).
+
+Inspect, override, or reset a profile's policy:
+
+```bash
+# Show effective policy and overrides
+github-app profile policy show --name my-project
+
+# Allow merging PRs whose live baseRefName is 'preview' and protect 'release'
+github-app profile policy set \
+  --name my-project \
+  --protected-branches main,master,release \
+  --allow-merge-branches preview
+
+# Clear a branch list or toggle boolean guardrails
+github-app profile policy set \
+  --name my-project \
+  --allow-merge-branches "" \
+  --allow-force-push false \
+  --allow-delete-remote-branch false
+
+# Reset to restrictive defaults
+github-app profile policy reset --name my-project
+```
+
+Re-running `github-app profile import` for an existing profile preserves its stored `policy` overrides. See [docs/security-policy.md](docs/security-policy.md) for the complete rule reference and secret redaction specification.
