@@ -3,6 +3,7 @@
   "displayName": "GitHub App Auth",
   "description": "Policy-enforced GitHub App MCP server for authenticated remote Git operations and GitHub CLI commands outside the terminal sandbox.",
   "version": "0.2.0",
+  "logo": "assets/logo.svg",
   "author": {
     "name": "Celso Fassoni",
     "url": "https://github.com/cfassoni"

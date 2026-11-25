@@ -16,6 +16,7 @@ SUPPORTED_PLUGIN_TARGETS = ("antigravity",)
 ANTIGRAVITY_ASSET_FILES = (
     "plugin.json",
     "mcp_config.json",
+    "assets/logo.svg",
     "rules/AGENTS.md",
     "skills/github-app/SKILL.md",
 )
@@ -61,14 +62,14 @@ def install_antigravity_plugin(
     asset_root = resources.files("github_app.plugin_assets.antigravity")
     for rel_path in ANTIGRAVITY_ASSET_FILES:
         src = asset_root.joinpath(*rel_path.split("/"))
-        content = src.read_text(encoding="utf-8")
-        if rel_path == "mcp_config.json" and command is not None:
-            mcp_data = json.loads(content)
-            mcp_data["mcpServers"]["github-app"]["command"] = command.strip()
-            content = json.dumps(mcp_data, indent=2) + "\n"
         out_path = dest_dir / rel_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(content, encoding="utf-8")
+        if rel_path == "mcp_config.json" and command is not None:
+            mcp_data = json.loads(src.read_text(encoding="utf-8"))
+            mcp_data["mcpServers"]["github-app"]["command"] = command.strip()
+            out_path.write_text(json.dumps(mcp_data, indent=2) + "\n", encoding="utf-8")
+        else:
+            out_path.write_bytes(src.read_bytes())
 
     effective_command = command.strip() if command is not None else "github-app"
     resolved_cmd = _check_command_available(effective_command)

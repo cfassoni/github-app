@@ -33,7 +33,12 @@ def test_bundled_antigravity_assets_schema() -> None:
     assert set(manifest.keys()).issubset(allowed_keys)
     assert manifest["name"] == "github-app"
     assert manifest["version"] == __version__
+    assert manifest["logo"] == "assets/logo.svg"
     assert len(manifest["suggestedPrompts"]) == 3
+
+    logo_text = root.joinpath("assets", "logo.svg").read_text(encoding="utf-8")
+    assert "<svg" in logo_text
+    assert 'viewBox="0 0 256 256"' in logo_text
 
     mcp_cfg = json.loads(root.joinpath("mcp_config.json").read_text(encoding="utf-8"))
     assert mcp_cfg == {
@@ -74,6 +79,7 @@ def test_plugin_install_status_uninstall_lifecycle(
     dest = Path(installed["path"])
     assert (dest / "plugin.json").is_file()
     assert (dest / "mcp_config.json").is_file()
+    assert (dest / "assets" / "logo.svg").is_file()
     assert (dest / "rules" / "AGENTS.md").is_file()
     assert (dest / "skills" / "github-app" / "SKILL.md").is_file()
 
