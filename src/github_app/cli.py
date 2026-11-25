@@ -19,6 +19,12 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+from github_app.plugin import (
+    SUPPORTED_PLUGIN_TARGETS,
+    install_antigravity_plugin,
+    status_antigravity_plugin,
+    uninstall_antigravity_plugin,
+)
 from github_app.policy import load_effective_policy
 
 HELP_TEXT = """GitHub App auth for coding-agent projects
@@ -33,6 +39,7 @@ Commands:
   github-app run [--profile NAME] COMMAND [ARGS...]
   github-app status [--profile NAME]
   github-app mcp
+  github-app plugin install|uninstall|status antigravity [--target DIR] [--command PATH]
 
 Profiles contain App/installation IDs, a private-key file path, and the local Git
 commit identity. The key itself stays in its existing file. Tokens are cached
@@ -808,6 +815,53 @@ def cmd_mcp(args: list[str]) -> int:
     return serve_stdio()
 
 
+def cmd_plugin(args: list[str]) -> int:
+    if not args or args[0] not in ("install", "uninstall", "status"):
+        raise CLIError(
+            "github-app: usage: github-app plugin install|uninstall|status antigravity [OPTIONS]"
+        )
+
+    action = args[0]
+    if len(args) < 2:
+        raise CLIError(f"github-app: 'plugin {action}' requires a target (antigravity)")
+
+    target = args[1]
+    if target not in SUPPORTED_PLUGIN_TARGETS:
+        raise CLIError(
+            f"github-app: unsupported plugin target '{target}' "
+            f"(supported: {', '.join(SUPPORTED_PLUGIN_TARGETS)})"
+        )
+
+    target_root: Path | None = None
+    command: str | None = None
+    idx = 2
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--target" and idx + 1 < len(args):
+            target_root = Path(args[idx + 1])
+            idx += 2
+        elif action == "install" and arg == "--command" and idx + 1 < len(args):
+            command = args[idx + 1]
+            idx += 2
+        else:
+            raise CLIError(f"github-app: unknown or incomplete option '{arg}' for 'plugin {action}'")
+
+    if action == "install":
+        try:
+            result = install_antigravity_plugin(target_root=target_root, command=command)
+        except ValueError as exc:
+            raise CLIError(f"github-app: {exc}") from exc
+    elif action == "uninstall":
+        result = uninstall_antigravity_plugin(target_root=target_root)
+    else:
+        result = status_antigravity_plugin(target_root=target_root)
+
+    print(json.dumps(result, indent=2))
+    if result.get("warning"):
+        print(f"warning: {result['warning']}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
@@ -835,6 +889,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_status(rest)
         if cmd == "mcp":
             return cmd_mcp(rest)
+        if cmd == "plugin":
+            return cmd_plugin(rest)
         raise CLIError(f"github-app: unknown command '{cmd}' (run github-app --help)")
     except CLIError as exc:
         print(str(exc), file=sys.stderr)
