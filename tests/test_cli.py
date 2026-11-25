@@ -12,6 +12,7 @@ from typing import Any, Self
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
+
 from github_app import cli
 
 
@@ -442,4 +443,145 @@ def test_default_dirs_and_executable_resolution(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.chdir(tmp_path)
     with pytest.raises(cli.CLIError, match="no profile specified"):
         cli.resolve_profile_name()
+
+
+def test_profile_policy_cli_and_reimport_preservation(
+    isolated_env: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        cli.main(
+            [
+                "profile",
+                "import",
+                "--name",
+                "demo",
+                "--env",
+                str(isolated_env["env"]),
+            ]
+        )
+        == 0
+    )
+
+    # Show default effective policy
+    assert cli.main(["profile", "policy", "show", "--name", "demo"]) == 0
+    out, _ = capsys.readouterr()
+    data = json.loads(out)
+    assert data["profile"] == "demo"
+    assert data["effective"]["protected_branches"] == ["main", "master"]
+    assert data["overrides"] == {}
+
+    # Set policy overrides
+    assert (
+        cli.main(
+            [
+                "profile",
+                "policy",
+                "set",
+                "--name",
+                "demo",
+                "--protected-branches",
+                "main,release",
+                "--allow-merge-branches",
+                "preview",
+                "--allow-force-push",
+                "true",
+                "--allow-delete-remote-branch",
+                "false",
+            ]
+        )
+        == 0
+    )
+    out, _ = capsys.readouterr()
+    set_data = json.loads(out)
+    assert set_data["effective"] == {
+        "protected_branches": ["main", "release"],
+        "allow_merge_branches": ["preview"],
+        "allow_force_push": True,
+        "allow_delete_remote_branch": False,
+    }
+
+    # Clearing a branch list with empty string works
+    assert (
+        cli.main(
+            [
+                "profile",
+                "policy",
+                "set",
+                "--name",
+                "demo",
+                "--allow-merge-branches",
+                "",
+            ]
+        )
+        == 0
+    )
+    out, _ = capsys.readouterr()
+    assert json.loads(out)["effective"]["allow_merge_branches"] == []
+
+    # Re-importing the profile preserves existing policy overrides
+    assert (
+        cli.main(
+            [
+                "profile",
+                "import",
+                "--name",
+                "demo",
+                "--env",
+                str(isolated_env["env"]),
+                "--git-name",
+                "bot",
+            ]
+        )
+        == 0
+    )
+    assert cli.load_profiles()["demo"]["policy"]["protected_branches"] == ["main", "release"]
+
+    # Reset restores defaults
+    assert cli.main(["profile", "policy", "reset", "--name", "demo"]) == 0
+    out, _ = capsys.readouterr()
+    assert json.loads(out)["effective"]["protected_branches"] == ["main", "master"]
+    assert "policy" not in cli.load_profiles()["demo"]
+
+
+def test_profile_policy_cli_errors(
+    isolated_env: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["profile"]) == 1
+    assert cli.main(["profile", "policy"]) == 1
+    assert cli.main(["profile", "policy", "bad-action"]) == 1
+    assert cli.main(["profile", "policy", "show"]) == 1
+    assert cli.main(["profile", "policy", "show", "--name", "missing"]) == 1
+    assert cli.main(["profile", "policy", "show", "--name", "missing", "--unknown"]) == 1
+
+    assert (
+        cli.main(
+            [
+                "profile",
+                "import",
+                "--name",
+                "demo",
+                "--env",
+                str(isolated_env["env"]),
+            ]
+        )
+        == 0
+    )
+    assert cli.main(["profile", "policy", "set", "--name", "demo"]) == 1
+    assert (
+        cli.main(["profile", "policy", "set", "--name", "demo", "--allow-force-push", "maybe"])
+        == 1
+    )
+
+    # Corrupt stored policy fails cleanly on show and set
+    profiles = cli.load_profiles()
+    profiles["demo"]["policy"] = {"unknown_key": True}
+    cli.save_profiles(profiles)
+    assert cli.main(["profile", "policy", "show", "--name", "demo"]) == 1
+    assert (
+        cli.main(["profile", "policy", "set", "--name", "demo", "--allow-force-push", "true"])
+        == 1
+    )
+    _, err = capsys.readouterr()
+    assert "invalid policy" in err
+
 
