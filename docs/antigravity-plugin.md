@@ -15,6 +15,8 @@ github-app plugin install antigravity
 ~/.gemini/config/plugins/github-app/
 ├── plugin.json
 ├── mcp_config.json
+├── assets/
+│   └── logo.svg
 ├── rules/
 │   └── AGENTS.md
 └── skills/
