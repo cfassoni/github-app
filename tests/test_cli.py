@@ -584,4 +584,16 @@ def test_profile_policy_cli_errors(
     _, err = capsys.readouterr()
     assert "invalid policy" in err
 
+    with pytest.raises(cli.CLIError, match="invalid policy"):
+        cli.get_status_info("demo")
+
+    with pytest.raises(cli.CLIError, match="directory not found"):
+        cli.init_repository("demo", cwd=isolated_env["tmp"] / "does-not-exist")
+
+
+def test_mcp_cli_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert cli.main(["mcp", "--bad"]) == 1
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert cli.main(["mcp"]) == 0
+
 
